@@ -1,0 +1,18 @@
+# Main dependencies for Cassava Disease Pipeline
+# For CUDA 11.8 (if using GPU)
+torch==2.0.0+cu118
+torchvision==0.15.1+cu118
+# Install these with: pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cu118
+
+ultralytics==8.3.102
+ultralytics-thop==2.0.14
+albumentations==2.0.5
+matplotlib==3.8.4
+numpy==1.26.4
+pillow==10.3.0
+tqdm==4.67.1
+seaborn==0.13.2
+fastapi==0.95.1
+uvicorn==0.22.0
+pyyaml==6.0.2
+scikit-learn==1.4.2
