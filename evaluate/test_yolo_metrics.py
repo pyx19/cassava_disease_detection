@@ -13,6 +13,9 @@ import cv2
 from ultralytics import YOLO
 import argparse
 from collections import defaultdict
+import csv
+import datetime
+import re
 
 def iou(boxA, boxB):
     # box: [x1, y1, x2, y2]
@@ -49,7 +52,22 @@ def yolo_to_xyxy(box, img_w, img_h):
     y2 = (cy + h/2) * img_h
     return [x1, y1, x2, y2]
 
-def evaluate_yolo(detection_model_path, image_folder, label_folder, output_metrics, saliency_dir, conf_threshold=0.4, iou_thresh=0.5, use_gradcam=False):
+def extract_model_version(model_path):
+    """Extract YOLO model version from model path"""
+    if not model_path:
+        return "yolo"
+        
+    filename = os.path.basename(model_path)
+    
+    # Look for patterns like yolov5s, yolov8n, yolov9t, etc.
+    match = re.search(r'(yolov\d+[a-z]?)', filename.lower())
+    if match:
+        return match.group(1)
+    
+    # Default if no match found
+    return "yolo"
+
+def evaluate_yolo(detection_model_path, image_folder, label_folder, output_metrics, saliency_dir, conf_threshold=0.4, iou_thresh=0.5, use_gradcam=False, csv_output=None):
     """
     Evaluates a YOLO model on a test dataset, computes metrics, and generates saliency maps.
     
@@ -62,6 +80,7 @@ def evaluate_yolo(detection_model_path, image_folder, label_folder, output_metri
         conf_threshold: Detection confidence threshold
         iou_thresh: IoU threshold for TP/FP determination
         use_gradcam: Whether to use confidence-based heatmaps for visualizations
+        csv_output: Optional path to CSV file for detailed per-image metrics
     """
     os.makedirs(saliency_dir, exist_ok=True)
     model = YOLO(detection_model_path)
@@ -77,8 +96,27 @@ def evaluate_yolo(detection_model_path, image_folder, label_folder, output_metri
     na_cases = 0
     total_gt = 0
     total_pred = 0
+    
+    # Initialize CSV writer if output file is provided
+    csv_file = None
+    csv_writer = None
+    if csv_output:
+        csv_file = open(csv_output, 'w', newline='')
+        csv_writer = csv.writer(csv_file)
+        csv_writer.writerow(['image_name', 'true_positives', 'false_positives', 'false_negatives', 
+                           'gt_boxes', 'pred_boxes', 'avg_confidence', 'avg_iou', 'confidences', 'ious'])
 
     with open(output_metrics, 'w') as fout:
+        fout.write(f"YOLO Detection Model Evaluation Results\n")
+        fout.write(f"Model: {os.path.basename(detection_model_path)}\n")
+        fout.write(f"Confidence threshold: {conf_threshold}\n")
+        fout.write(f"IoU threshold: {iou_thresh}\n")
+        fout.write(f"Test images folder: {image_folder}\n")
+        fout.write(f"Labels folder: {label_folder}\n\n")
+        fout.write(f"Per-Image Results:\n")
+        fout.write(f"{'Image':<60} {'TP':<4} {'FP':<4} {'FN':<4} {'GT':<4} {'Pred':<4} {'Avg Conf':<10} {'Avg IoU':<10}\n")
+        fout.write(f"{'-'*120}\n")
+        
         for img_path in image_paths:
             img_name = os.path.basename(img_path)
             label_name = os.path.splitext(img_name)[0] + '.txt'
@@ -121,6 +159,22 @@ def evaluate_yolo(detection_model_path, image_folder, label_folder, output_metri
             all_ious.extend(ious_img)
             if len(gt_boxes) == 0 or len(pred_boxes) == 0:
                 na_cases += 1
+                
+            # Calculate per-image metrics
+            avg_confidence = np.mean(pred_confs) if len(pred_confs) > 0 else 0
+            avg_iou = np.mean(ious_img) if len(ious_img) > 0 else 0
+            
+            # Write to CSV
+            if csv_writer:
+                confidences_str = ','.join([f"{conf:.4f}" for conf in pred_confs])
+                ious_str = ','.join([f"{val:.4f}" for val in ious_img])
+                csv_writer.writerow([img_name, len(matched_gt), len(pred_boxes)-len(matched_gt), 
+                                    false_neg, len(gt_boxes), len(pred_boxes), 
+                                    f"{avg_confidence:.4f}", f"{avg_iou:.4f}", 
+                                    confidences_str, ious_str])
+            
+            # Write to text file with confidence and IoU 
+            fout.write(f"{img_name:<60} {len(matched_gt):<4} {len(pred_boxes)-len(matched_gt):<4} {false_neg:<4} {len(gt_boxes):<4} {len(pred_boxes):<4} {avg_confidence:.4f}     {avg_iou:.4f}\n")
 
             # Generate heatmap-based saliency maps
             original_img = np.array(img)
@@ -214,7 +268,9 @@ def evaluate_yolo(detection_model_path, image_folder, label_folder, output_metri
         recall = all_true_positives / (all_true_positives + all_false_negatives + 1e-6)
         mean_iou = np.mean(all_ious) if all_ious else 0
         mean_conf = np.mean(all_confidences) if all_confidences else 0
-        fout.write(f"\n---\n")
+        
+        fout.write(f"\n{'-'*120}\n")
+        fout.write(f"Summary Metrics:\n")
         fout.write(f"Total images: {len(image_paths)}\n")
         fout.write(f"Total GT boxes: {total_gt}\n")
         fout.write(f"Total Pred boxes: {total_pred}\n")
@@ -228,18 +284,61 @@ def evaluate_yolo(detection_model_path, image_folder, label_folder, output_metri
         fout.write(f"Mean Confidence: {mean_conf:.4f}\n")
         # mAP@0.5 (approximate, as full AP needs more code)
         fout.write(f"mAP@0.5 (proxy): {precision*recall:.4f}\n")
+    
+    # Close CSV file if open
+    if csv_file:
+        csv_file.close()
+        print(f"Per-image metrics written to {csv_output}")
+    
     print(f"Evaluation complete. Metrics written to {output_metrics}\nSaliency maps saved in {saliency_dir}/")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='YOLO Detection Model Evaluation with Metrics and Saliency Maps')
-    parser.add_argument('--detection_model', type=str, required=True, help='Path to YOLO detection model')
-    parser.add_argument('--test-folder', type=str, default='data/Cassava_Leaf_Detector.v1i.yolov8/test/images', help='Folder containing test images')
-    parser.add_argument('--label-folder', type=str, default='data/Cassava_Leaf_Detector.v1i.yolov8/test/labels', help='Folder containing YOLO label txt files')
+    parser.add_argument('--detection_model', type=str, 
+                        default='models/yolov9s_training_results/yolov9s_best.pt',
+                        help='Path to YOLO detection model')
+    parser.add_argument('--test-folder', type=str, 
+                        default='data/Cassava_Leaf_Detector.v1i.yolov8/test/images', 
+                        help='Folder containing test images')
+    parser.add_argument('--label-folder', type=str, 
+                        default='data/Cassava_Leaf_Detector.v1i.yolov8/test/labels', 
+                        help='Folder containing YOLO label txt files')
     parser.add_argument('--output-metrics', type=str, default='yolo_metrics_summary.txt', help='Output txt file for metrics summary')
+    parser.add_argument('--csv-output', type=str, default='yolo_metrics_per_image.csv', help='Output CSV file for per-image metrics')
     parser.add_argument('--saliency-dir', type=str, default='detection_saliency_maps', help='Folder to save saliency maps')
     parser.add_argument('--conf-threshold', type=float, default=0.4, help='Detection confidence threshold')
     parser.add_argument('--iou-thresh', type=float, default=0.5, help='IoU threshold for TP/FP')
-    parser.add_argument('--use-gradcam', action='store_true', help='Use confidence-based heatmaps for saliency maps')
+    parser.add_argument('--use-gradcam', action='store_true', default=True, help='Use confidence-based heatmaps for saliency maps')
     args = parser.parse_args()
-    print(f"Generating {'confidence-based heatmap' if args.use_gradcam else 'simple'} saliency maps...")
-    evaluate_yolo(args.detection_model, args.test_folder, args.label_folder, args.output_metrics, args.saliency_dir, args.conf_threshold, args.iou_thresh, args.use_gradcam)
+    
+    # Extract model version from path
+    yolo_version = extract_model_version(args.detection_model)
+    
+    # Generate timestamp for filenames
+    timestamp = datetime.datetime.now().strftime("%H%M%S_%d%m%y")
+    
+    # Update output filenames/dirs with model version and timestamp
+    model_timestamp = f"{yolo_version}_{timestamp}"
+    
+    # Create main saliency directory
+    saliency_type = "gradcam" if args.use_gradcam else "simple"
+    saliency_dir = f"saliencymaps_{saliency_type}_{model_timestamp}"
+    os.makedirs(saliency_dir, exist_ok=True)
+    
+    # Create generated_images subfolder for the actual image outputs
+    generated_images_dir = os.path.join(saliency_dir, "generated_images")
+    os.makedirs(generated_images_dir, exist_ok=True)
+    
+    # Update paths with new naming scheme - keep files inside main saliency directory
+    output_metrics = os.path.join(saliency_dir, f"metrics_{model_timestamp}.txt")
+    csv_output = os.path.join(saliency_dir, f"metrics_{model_timestamp}.csv")
+    
+    print(f"Generating {saliency_type} saliency maps...")
+    print(f"Output files will use base prefix: {model_timestamp}")
+    print(f"Metrics file: {output_metrics}")
+    print(f"CSV metrics: {csv_output}")
+    print(f"Saliency maps: {generated_images_dir}")
+    
+    evaluate_yolo(args.detection_model, args.test_folder, args.label_folder, 
+                output_metrics, generated_images_dir, args.conf_threshold, 
+                args.iou_thresh, args.use_gradcam, csv_output)

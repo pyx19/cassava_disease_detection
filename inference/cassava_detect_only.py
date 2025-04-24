@@ -11,8 +11,26 @@ import matplotlib.pyplot as plt
 from ultralytics import YOLO
 from matplotlib.patches import Rectangle
 import argparse
+import datetime
+import re
 
-def detect_leaves_in_folder(detection_model_path, image_folder, output_folder="detection_results", num_images=None, conf_threshold=0.4):
+def extract_yolo_version(model_path):
+    """Extract YOLO version from model path"""
+    filename = os.path.basename(model_path)
+    match = re.search(r'(yolov\d+[a-z]?)', filename.lower())
+    if match:
+        return match.group(1)
+    return "yolo"
+
+def detect_leaves_in_folder(detection_model_path, image_folder, output_folder=None, num_images=None, conf_threshold=0.4):
+    # Extract model version and create timestamp
+    yolo_version = extract_yolo_version(detection_model_path)
+    timestamp = datetime.datetime.now().strftime("%H%M%S_%d%m%y")
+    
+    # Generate output folder name with model and timestamp if not provided
+    if output_folder is None:
+        output_folder = f"detection_{yolo_version}_{timestamp}"
+    
     print(f"Loading detection model from {detection_model_path}...")
     model = YOLO(detection_model_path)
 
@@ -39,7 +57,8 @@ def detect_leaves_in_folder(detection_model_path, image_folder, output_folder="d
             x1, y1, x2, y2 = box
             rect = Rectangle((x1, y1), x2-x1, y2-y1, linewidth=2, edgecolor='lime', facecolor='none')
             ax.add_patch(rect)
-            ax.text(x1, y1-5, f"Conf: {conf:.2f}", color='white', fontsize=8, bbox=dict(facecolor='lime', alpha=0.7))
+            ax.text(x1, y1-5, f"Conf: {conf:.2f}", color='black', fontsize=10, fontweight='bold', 
+                   bbox=dict(facecolor='lime', alpha=0.7, edgecolor='black', boxstyle='round,pad=0.2'))
         ax.axis('off')
         base_name = os.path.splitext(os.path.basename(img_path))[0]
         save_path = os.path.join(output_folder, f"{base_name}_detected.png")
@@ -51,10 +70,15 @@ def detect_leaves_in_folder(detection_model_path, image_folder, output_folder="d
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Cassava Leaf Detection Only Inference')
-    parser.add_argument('--detection_model', type=str, required=True, help='Path to YOLO detection model')
-    parser.add_argument('--test-folder', type=str, required=True, help='Folder containing test images')
-    parser.add_argument('--output-folder', type=str, default='detection_results', help='Folder to save detection results')
-    parser.add_argument('--num-images', type=int, default=None, help='Number of images to process')
+    parser.add_argument('--detection_model', type=str, 
+                        default='models/yolov9s_training_results/yolov9s_best.pt',
+                        help='Path to YOLO detection model')
+    parser.add_argument('--test-folder', type=str, 
+                        default='data/Cassava_Leaf_Detector.v1i.yolov8/test/images',
+                        help='Folder containing test images')
+    parser.add_argument('--output-folder', type=str, default=None, 
+                        help='Folder to save detection results (default: auto-generated with timestamp)')
+    parser.add_argument('--num-images', type=int, default=5, help='Number of images to process')
     parser.add_argument('--conf-threshold', type=float, default=0.4, help='Detection confidence threshold')
     args = parser.parse_args()
     detect_leaves_in_folder(args.detection_model, args.test_folder, args.output_folder, args.num_images, args.conf_threshold)
